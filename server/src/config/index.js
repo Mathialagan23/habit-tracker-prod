@@ -7,7 +7,7 @@ dotenv.config({ path: path.join(__dirname, '../../.env.example') });
 dotenv.config({ path: path.join(__dirname, '../../.env'), override: true });
 
 module.exports = {
-  port: parseInt(process.env.PORT, 10) || 5000,
+  port: parseInt(process.env.PORT, 10) || 8080,
   nodeEnv: process.env.NODE_ENV || 'development',
 
   mongo: {

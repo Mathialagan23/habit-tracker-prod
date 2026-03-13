@@ -36,21 +36,21 @@ const migrateHabitLogIndex = async () => {
 };
 
 const start = async () => {
-  await connectDB();
-
-  // Migrate stale indexes, then sync new ones
-  await migrateHabitLogIndex();
-  await mongoose.model('HabitLog').syncIndexes();
-
-  // Seed default achievements
-  await achievementService.seed();
-
   const server = app.listen(config.port, () => {
     logger.info(`Server running on port ${config.port} [${config.nodeEnv}]`);
-    logger.info('Reminder and weekly report jobs are now triggered via Cloud Scheduler (POST /jobs/reminders, POST /jobs/weekly-reports)');
   });
 
-  // Graceful shutdown
+  try {
+    await connectDB();
+
+    await migrateHabitLogIndex();
+    await mongoose.model('HabitLog').syncIndexes();
+
+    await achievementService.seed();
+  } catch (err) {
+    logger.error({ err }, 'Startup tasks failed');
+  }
+
   const shutdown = async (signal) => {
     logger.info({ signal }, 'Shutting down server');
     server.close();
