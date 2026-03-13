@@ -1,5 +1,6 @@
 const userService = require('../services/user.service');
 const User = require('../models/User');
+const { bucket } = require('../config/storage');
 
 exports.updateProfile = async (req, res, next) => {
   try {
@@ -15,13 +16,30 @@ exports.uploadAvatar = async (req, res, next) => {
     if (!req.file) {
       return res.status(400).json({ error: { message: 'No file uploaded' } });
     }
-    const avatarPath = `/uploads/avatars/${req.file.filename}`;
-    const user = await User.findByIdAndUpdate(
-      req.user.id,
-      { $set: { avatar: avatarPath } },
-      { new: true }
-    );
-    res.json({ data: user });
+
+    const fileName = `avatars/${req.user.id}-${Date.now()}-${req.file.originalname}`;
+    const blob = bucket.file(fileName);
+
+    const blobStream = blob.createWriteStream({
+      resumable: false,
+      contentType: req.file.mimetype,
+    });
+
+    blobStream.on('error', (err) => next(err));
+
+    blobStream.on('finish', async () => {
+      const publicUrl = `https://storage.googleapis.com/${bucket.name}/${blob.name}`;
+
+      const user = await User.findByIdAndUpdate(
+        req.user.id,
+        { $set: { avatar: publicUrl } },
+        { new: true }
+      );
+
+      res.json({ data: user });
+    });
+
+    blobStream.end(req.file.buffer);
   } catch (err) {
     next(err);
   }
