@@ -107,7 +107,7 @@ steps:
 
   # 4. Install frontend npm dependencies
   - id: install-frontend
-    name: node:22-alpine
+    name: node:20
     # waitFor: ['-'] means "no dependency — start immediately"
     waitFor: ['-']
     dir: client
@@ -121,7 +121,7 @@ steps:
 
   # 5. Build the Vite project (output → client/dist/)
   - id: build-frontend
-    name: node:22-alpine
+    name: node:20
     waitFor: [install-frontend]
     dir: client
     entrypoint: npm
@@ -134,7 +134,7 @@ steps:
 
   # 6. Deploy client/dist/ to Firebase Hosting
   - id: deploy-frontend
-    name: node:22-alpine
+    name: node:20
     waitFor: [build-frontend]
     dir: client
     entrypoint: sh
@@ -148,7 +148,7 @@ steps:
         --token "$$FIREBASE_TOKEN"
         --non-interactive
     secretEnv:
-      - FIREBASE_TOKEN
+      - firebase-token
     volumes:
       - name: npm-cache
         path: /root/.npm
