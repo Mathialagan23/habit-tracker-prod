@@ -148,7 +148,7 @@ steps:
         --token "$$FIREBASE_TOKEN"
         --non-interactive
     secretEnv:
-      - firebase-token
+      - FIREBASE_TOKEN
     volumes:
       - name: npm-cache
         path: /root/.npm
