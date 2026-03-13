@@ -108,29 +108,32 @@ steps:
   # 4. Install frontend npm dependencies
   - id: install-frontend
     name: node:20
-    # waitFor: ['-'] means "no dependency — start immediately"
     waitFor: ['-']
     dir: client
-    entrypoint: npm
+    entrypoint: sh
     args:
-      - install
-      - --prefer-offline
+    - -c
+    - |
+      rm -rf node_modules package-lock.json
+      npm install
     volumes:
-      - name: npm-cache
-        path: /root/.npm
+    - name: npm-cache
+      path: /root/.npm
 
-  # 5. Build the Vite project (output → client/dist/)
-  - id: build-frontend
-    name: node:20
-    waitFor: [install-frontend]
-    dir: client
-    entrypoint: npm
-    args:
-      - run
-      - build
-    volumes:
-      - name: npm-cache
-        path: /root/.npm
+  # 5. Build the Vite project
+  -  id: build-frontend
+     name: node:20
+     waitFor: [install-frontend]
+     dir: client
+     entrypoint: npm
+     env:
+     - CI=true
+     args:
+     - run
+     - build
+     volumes:
+     - name: npm-cache
+       path: /root/.npm
 
   # 6. Deploy client/dist/ to Firebase Hosting
   - id: deploy-frontend
