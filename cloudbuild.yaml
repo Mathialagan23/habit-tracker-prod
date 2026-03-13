@@ -1,0 +1,175 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Cloud Build — Habit Tracker CI/CD Pipeline
+#
+# Trigger  : push to main branch (configure in GCP Console → Cloud Build →
+#             Triggers, or via `gcloud builds triggers create github ...`)
+#
+# Backend  : Build Docker image → Push to Artifact Registry → Deploy Cloud Run
+# Frontend : npm install → Vite build → Firebase Hosting deploy
+#
+# The backend and frontend pipelines run in parallel where possible.
+#
+# Prerequisites
+# ─────────────
+# 1. Enable APIs: Cloud Build, Cloud Run, Artifact Registry, Secret Manager
+# 2. Create Artifact Registry repository:
+#      gcloud artifacts repositories create habit-tracker-repo \
+#        --repository-format=docker --location=asia-south1
+# 3. Store Firebase CI token in Secret Manager:
+#      firebase login:ci                            # generates token locally
+#      echo -n "<token>" | gcloud secrets create firebase-token \
+#        --data-file=- --replication-policy=automatic
+# 4. Grant Cloud Build SA access:
+#      roles/run.admin          (deploy Cloud Run)
+#      roles/iam.serviceAccountUser (act as Cloud Run SA)
+#      roles/secretmanager.secretAccessor (read firebase-token)
+#      roles/artifactregistry.writer (push images)
+# 5. Set Cloud Run environment variables / secrets separately:
+#      gcloud run services update habit-tracker-api \
+#        --update-secrets MONGODB_URI=mongodb-uri:latest,
+#                         JWT_ACCESS_SECRET=jwt-access-secret:latest,
+#                         ...
+# ─────────────────────────────────────────────────────────────────────────────
+
+substitutions:
+  _SERVICE_NAME: habit-tracker-api
+  _REGION: asia-south1
+  _REPOSITORY: habit-tracker-repo
+  _AR_HOST: asia-south1-docker.pkg.dev
+
+steps:
+
+  # ── BACKEND ──────────────────────────────────────────────────────────────────
+
+  # 0. Pull previous image for Docker layer cache (best-effort — never fails)
+  - id: pull-backend-cache
+    name: gcr.io/cloud-builders/docker
+    entrypoint: sh
+    args:
+      - -c
+      - >-
+        docker pull
+        ${_AR_HOST}/$PROJECT_ID/${_REPOSITORY}/${_SERVICE_NAME}:latest
+        || true
+
+  # 1. Build the Docker image from server/
+  - id: build-backend
+    name: gcr.io/cloud-builders/docker
+    waitFor: [pull-backend-cache]
+    args:
+      - build
+      - --file=server/Dockerfile
+      # Tag with commit SHA for immutable reference and latest for cache reuse
+      - --tag=${_AR_HOST}/$PROJECT_ID/${_REPOSITORY}/${_SERVICE_NAME}:$COMMIT_SHA
+      - --tag=${_AR_HOST}/$PROJECT_ID/${_REPOSITORY}/${_SERVICE_NAME}:latest
+      # Reuse layers from the previous build (requires pull-backend-cache above)
+      - --cache-from=${_AR_HOST}/$PROJECT_ID/${_REPOSITORY}/${_SERVICE_NAME}:latest
+      # Build context is the server/ directory (Dockerfile lives there)
+      - server/
+
+  # 2. Push both tags to Artifact Registry
+  - id: push-backend
+    name: gcr.io/cloud-builders/docker
+    waitFor: [build-backend]
+    args:
+      - push
+      - --all-tags
+      - ${_AR_HOST}/$PROJECT_ID/${_REPOSITORY}/${_SERVICE_NAME}
+
+  # 3. Deploy the new image to Cloud Run
+  - id: deploy-backend
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    waitFor: [push-backend]
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE_NAME}
+      - --image=${_AR_HOST}/$PROJECT_ID/${_REPOSITORY}/${_SERVICE_NAME}:$COMMIT_SHA
+      - --region=${_REGION}
+      - --platform=managed
+      - --port=8080
+      - --allow-unauthenticated
+      # Scaling: scale to zero when idle, cap at 10 instances
+      - --min-instances=0
+      - --max-instances=10
+      # Resources
+      - --memory=512Mi
+      - --cpu=1
+      # Give the server enough time to boot + handle slow MongoDB Atlas connects
+      - --timeout=60
+      # Respect Cloud Run's injected PORT (config/index.js reads process.env.PORT)
+      - --set-env-vars=NODE_ENV=production
+      # NOTE: Add secrets via --update-secrets on first deploy (see Prerequisites)
+
+  # ── FRONTEND ─────────────────────────────────────────────────────────────────
+  # Runs in parallel with the backend pipeline (waitFor: ['-'] = start immediately)
+
+  # 4. Install frontend npm dependencies
+  - id: install-frontend
+    name: node:22-alpine
+    # waitFor: ['-'] means "no dependency — start immediately"
+    waitFor: ['-']
+    dir: client
+    entrypoint: npm
+    args:
+      - install
+      - --prefer-offline
+    volumes:
+      - name: npm-cache
+        path: /root/.npm
+
+  # 5. Build the Vite project (output → client/dist/)
+  - id: build-frontend
+    name: node:22-alpine
+    waitFor: [install-frontend]
+    dir: client
+    entrypoint: npm
+    args:
+      - run
+      - build
+    volumes:
+      - name: npm-cache
+        path: /root/.npm
+
+  # 6. Deploy client/dist/ to Firebase Hosting
+  - id: deploy-frontend
+    name: node:22-alpine
+    waitFor: [build-frontend]
+    dir: client
+    entrypoint: sh
+    args:
+      - -c
+      # Install firebase-tools globally then deploy.
+      # The npm-cache volume avoids re-downloading on repeated builds.
+      - >-
+        npm install --global firebase-tools --prefer-offline --quiet &&
+        firebase deploy --only hosting
+        --token "$$FIREBASE_TOKEN"
+        --non-interactive
+    secretEnv:
+      - FIREBASE_TOKEN
+    volumes:
+      - name: npm-cache
+        path: /root/.npm
+
+# ── Declare image artefacts ───────────────────────────────────────────────────
+# Cloud Build stores these in the build record for traceability.
+images:
+  - ${_AR_HOST}/$PROJECT_ID/${_REPOSITORY}/${_SERVICE_NAME}:$COMMIT_SHA
+  - ${_AR_HOST}/$PROJECT_ID/${_REPOSITORY}/${_SERVICE_NAME}:latest
+
+# ── Resolve secrets from Secret Manager ──────────────────────────────────────
+availableSecrets:
+  secretManager:
+    - versionName: projects/$PROJECT_ID/secrets/firebase-token/versions/latest
+      env: FIREBASE_TOKEN
+
+# ── Build options ─────────────────────────────────────────────────────────────
+options:
+  # Log to Cloud Logging only (no GCS bucket required)
+  logging: CLOUD_LOGGING_ONLY
+  # E2_MEDIUM gives 2 vCPUs / 4 GB — enough for a parallel docker build + npm
+  machineType: E2_MEDIUM
+  # Fail fast: if any step errors, cancel pending steps
+  substitutionOption: ALLOW_LOOSE

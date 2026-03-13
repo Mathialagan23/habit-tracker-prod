@@ -1,0 +1,29 @@
+# Node dependencies — always reinstalled inside the image
+node_modules/
+
+# Environment files — secrets must be injected at runtime via Cloud Run env vars
+.env
+.env.*
+!.env.example
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Dev tools / IDE
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Git metadata
+.git/
+.gitignore
+
+# Existing uploads — these are runtime artefacts, not part of the source image
+uploads/
+
+# Docker build files (no need to copy into the image)
+Dockerfile
+.dockerignore
